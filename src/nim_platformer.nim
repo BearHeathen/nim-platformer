@@ -15,11 +15,17 @@ type
     texture: TexturePtr
     pos: Point2d
     vel: Vector2d
+  
+  Map = ref object
+    texture: TexturePtr
+    width, height: int
+    tiles: seq[uint8]
 
   Game = ref object
     inputs: array[Input, bool]
     renderer: RendererPtr
     player: Player
+    map: Map
     camera: Vector2d
 
 proc toInput(key: Scancode): Input = 
