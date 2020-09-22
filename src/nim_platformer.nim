@@ -1,15 +1,20 @@
-import sdl2, sdl2/image, basic2d
+import sdl2, sdl2/image, basic2d, strutils, times, math
 
 type SDLException = object of Exception
+
+const
+  windowSize: Point = (1280.cint, 720.cint)
+  tilesPerRow = 16
+  tileSize: Point = (64.cint, 64.cint)
+  playerSize = vector2d(64, 64)
+  air = 0
+  start = 78
+  finish = 110
 
 type 
   Input {.pure.} = enum none, left, right, jump, restart, quit
 
-  #[ Point2d = object
-    x*, y*: float
-   ]#
-  #[ Vector2d = ref object
-    x*, y*: float ]#
+  Collision {.pure.} = enum x, y, corner
 
   Player = ref object
     texture: TexturePtr
@@ -50,13 +55,112 @@ proc handleInput(game: Game) =
     else:
       discard
 
-#[ proc vector2d(x, y: float): Vector2d {.noInit, inline.} =
-  result.x = x
-  result.y = y
+proc moveCamera(game: Game) =
+  const halfWin = float(windowSize.x div 2)
+  let 
+    leftArea = game.player.pos.x - halfWin - 100
+    rightArea = game.player.pos.x - halfWin + 100
+  game.camera.x = clamp(game.player.pos.x, leftArea, rightArea)
 
-proc point2d(x, y: float): Point2d {.noInit, inline.} =
-  result.x = x 
-  result.y = y ]#
+proc getTile(map: Map, x, y: int): uint8 = 
+  let 
+    nx = clamp(x div tileSize.x, 0, map.width - 1)
+    ny = clamp(y div tileSize.y, 0, map.height - 1)
+    pos = ny * map.width + nx
+  
+  map.tiles[pos]
+
+proc isSolid(map: Map, x,y: int): bool = 
+  map.getTile(x,y) notin {air, start, finish}
+
+proc isSolid(map: Map, point: Point2d): bool =
+  map.isSolid(point.x.round.int, point.y.round.int)
+
+proc onGround(map: Map, pos: Point2d, size: Vector2d): bool =
+  let size = size * 0.5
+  result = 
+    map.isSolid(point2d(pos.x - size.x, pos.y + size.y + 1)) or
+    map.isSolid(point2d(pos.x + size.x, pos.y + size.y + 1))
+
+proc testBox(map: Map, pos: Point2d, size: Vector2d): bool =
+  let size = size * 0.5
+  result =
+    map.isSolid(point2d(pos.x - size.x, pos.y - size.y)) or
+    map.isSolid(point2d(pos.x + size.x, pos.y - size.y)) or
+    map.isSolid(point2d(pos.x - size.x, pos.y + size.y)) or
+    map.isSolid(point2d(pos.x + size.x, pos.y + size.y))
+
+proc moveBox(map: Map, pos: var Point2d, vel: var Vector2d,
+             size: Vector2d): set[Collision] {.discardable.} =
+  let distance = vel.len
+  let maximum = distance.int
+
+  if distance < 0:
+    return
+
+  let fraction = 1.0 / float(maximum + 1)
+
+  for i in 0 .. maximum:
+    var newPos = pos + vel * fraction
+
+    if map.testBox(newPos, size):
+      var hit = false
+
+      if map.testBox(point2d(pos.x, newPos.y), size):
+        result.incl Collision.y
+        newPos.y = pos.y
+        vel.y = 0
+        hit = true
+
+      if map.testBox(point2d(newPos.x, pos.y), size):
+        result.incl Collision.x
+        newPos.x = pos.x
+        vel.x = 0
+        hit = true
+
+      if not hit:
+        result.incl Collision.corner
+        newPos = pos
+        vel = vector2d(0, 0)
+
+    pos = newPos
+
+proc newMap(texture: TexturePtr, file: string): Map =
+  new result
+  result.texture = texture
+  result.tiles = @[]
+
+  for line in file.lines:
+    var width = 0
+    for word in line.split(' '):
+      if word == "": continue
+      let value = parseUInt(word)
+      if value > uint(uint8.high):
+        raise ValueError.newException(
+          "Invalid value " & word & " in map " & file)
+      result.tiles.add value.uint8
+      inc width
+
+    if result.width > 0 and result.width != width:
+      raise ValueError.newException(
+        "Incompatible line length in map " & file)
+    result.width = width
+    inc result.height
+
+proc renderMap(renderer: RendererPtr, map: Map, camera: Vector2d) =
+  var
+    clip = rect(0, 0, tileSize.x, tileSize.y)
+    dest = rect(0, 0, tileSize.x, tileSize.y)
+
+  for i, tileNr in map.tiles:
+    if tileNr == 0: continue
+
+    clip.x = cint(tileNr mod tilesPerRow) * tileSize.x
+    clip.y = cint(tileNr div tilesPerRow) * tileSize.y
+    dest.x = cint(i mod map.width) * tileSize.x - camera.x.cint
+    dest.y = cint(i div map.width) * tileSize.y - camera.y.cint
+
+    renderer.copy(map.texture, unsafeAddr clip, unsafeAddr dest)
 
 proc renderPlayer(renderer: RendererPtr, texture: TexturePtr, pos: Point2d) =
   # This is how we take the various parts of the png that make the character
@@ -95,6 +199,7 @@ proc newGame(renderer: RendererPtr): Game =
   new result
   result.renderer = renderer
   result.player = newPlayer(renderer.loadTexture("images/player1.png"))
+  result.map = newMap(renderer.loadTexture("images/grass.png"), "images/default.map")
 
 template sdlFailIf(cond: typed, reason: string) =
   if cond: raise SDLException.newException(reason & ", SDL Error: " & $getError())
@@ -104,8 +209,30 @@ proc render(game: Game) =
   game.renderer.clear()
   # Actual drawing here.
   game.renderer.renderPlayer(game.player.texture, game.player.pos - game.camera)
+  game.renderer.renderMap(game.map, game.camera)
   # Show the result on screen
   game.renderer.present()
+
+proc physyics(game: Game) = 
+  if game.inputs[Input.restart]:
+    game.player.restartPlayer()
+  
+  let ground = game.map.onGround(game.player.pos, playerSize)
+  
+  if game.inputs[Input.jump]:
+    game.player.vel.y = -15
+  
+  let direction = float(game.inputs[Input.right].int - game.inputs[Input.left].int)
+
+  game.player.vel.y += 0.75
+  if ground:
+    game.player.vel.x = 0.5 * game.player.vel.x + 4.0 * direction
+  else: 
+    game.player.vel.x = 0.95 * game.player.vel.x + 2.0 * direction
+  game.player.vel.x = clamp(game.player.vel.x, -8, 8)
+
+  game.map.moveBox(game.player.pos, game.player.vel, playerSize)
+
 
 proc main =
   sdlFailIf(not sdl2.init(INIT_VIDEO or INIT_TIMER or INIT_EVENTS)):
@@ -122,7 +249,7 @@ proc main =
   sdlFailIf(not setHint("SDL_RENDER_SCALE_QUALITY", "2")):
     "Linear texture filtering could not be enabled."
   
-  let window = createWindow(title = "Our Own 2D Platformer",
+  let window = createWindow(title = "Flame of the Bear",
     x = SDL_WINDOWPOS_CENTERED, y = SDL_WINDOWPOS_CENTERED,
     w = 1280, h = 720, flags = SDL_WINDOW_SHOWN)
   sdlFailIf window.isNil: "Window could not be created."
@@ -136,11 +263,21 @@ proc main =
   # Set the default color to use for drawing
   renderer.setDrawColor(r = 110, g = 132, b = 174)
    
-  var game = newGame(renderer)
+  var
+    game = newGame(renderer)
+    startTime = epochTime()
+    lastTick = 0
 
   # Game loop, draws each frame
   while not game.inputs[Input.quit]:
     game.handleInput()
+
+    let newTick = int((epochTime() - startTime) * 50)
+    for tick in (lastTick + 1)..newTick:
+      game.physyics()  
+      game.moveCamera()  
+    lastTick = newTick
+
     game.render()
     
 main()
