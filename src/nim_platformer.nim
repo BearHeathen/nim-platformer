@@ -158,11 +158,11 @@ proc newGame(renderer: RendererPtr): Game =
   new result
   result.renderer = renderer
 
-  result.font = openFont("data/DejaVuSans.ttf", 28)
+  result.font = openFont("../data/DejaVuSans.ttf", 28)
   sdlFailIf result.font.isNil: "Failed to load font"
 
-  result.player = newPlayer(renderer.loadTexture("data/player1.png"))
-  result.map = newMap(renderer.loadTexture("data/grass.png"), "data/default.map")
+  result.player = newPlayer(renderer.loadTexture("../data/player1.png"))
+  result.map = newMap(renderer.loadTexture("../data/grass.png"), "../data/default.map")
 
 proc toInput(key: Scancode): Input =
   case key
@@ -345,7 +345,7 @@ proc main =
   sdlFailIf(ttfInit() == SdlError): "SDL2 TTF initialization failed"
   defer: ttfQuit()
 
-  let window = createWindow(title = "Our own 2D platformer",
+  let window = createWindow(title = "Flame of the Bear",
     x = SDL_WINDOWPOS_CENTERED, y = SDL_WINDOWPOS_CENTERED,
     w = windowSize.x, h = windowSize.y, flags = SDL_WINDOW_SHOWN)
   sdlFailIf window.isNil: "Window could not be created"
